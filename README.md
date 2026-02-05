@@ -56,7 +56,7 @@
 
 ## ✨ Features
 
-- 🎯 **9 State-of-the-Art Trackers** — SORT, ByteTrack, OC-SORT, DeepOC-SORT, StrongSORT, BoT-SORT, BoostTrack, HybridSORT, UCMCTrack
+- 🎯 **10 State-of-the-Art Trackers** — SORT, ByteTrack, OC-SORT, DeepOC-SORT, StrongSORT, BoT-SORT, BoostTrack, HybridSORT, UCMCTrack, OracleTrack
 - ⚡ **Blazing Fast** — Optimized C++ implementation, 10-100x faster than Python equivalents
 - 🔧 **Easy Integration** — Modern CMake, single-header option, vcpkg support
 - 🧪 **Well Tested** — Comprehensive unit tests with >90% code coverage
@@ -158,6 +158,7 @@ int main() {
 | **ByteTrack** | Motion | ⚡⚡⚡⚡⚡ | [Zhang et al., ECCV 2022](https://arxiv.org/abs/2110.06864) |
 | **OC-SORT** | Motion | ⚡⚡⚡⚡ | [Cao et al., CVPR 2023](https://arxiv.org/abs/2203.14360) |
 | **UCMCTrack** | Motion | ⚡⚡⚡⚡ | [Yi et al., AAAI 2024](https://arxiv.org/abs/2312.08952) |
+| **OracleTrack** | Motion | ⚡⚡⚡⚡ | Kalman + CMC + Cascaded Association |
 | **DeepOC-SORT** | ReID | ⚡⚡⚡ | [Maggiolino et al., 2023](https://arxiv.org/abs/2302.11813) |
 | **StrongSORT** | ReID | ⚡⚡ | [Du et al., TMM 2023](https://arxiv.org/abs/2202.13514) |
 | **BoT-SORT** | ReID | ⚡⚡ | [Aharon et al., 2022](https://arxiv.org/abs/2206.14651) |
@@ -167,10 +168,10 @@ int main() {
 ### Tracker Selection Guide
 
 ```
-Need maximum speed?     → SORT, ByteTrack
-General purpose?        → ByteTrack, OC-SORT
-Heavy occlusions?       → OC-SORT, UCMCTrack
-Moving camera?          → UCMCTrack, BoT-SORT
+Need maximum speed?     → SORT, ByteTrack, OracleTrack
+General purpose?        → ByteTrack, OC-SORT, OracleTrack
+Heavy occlusions?       → OC-SORT, UCMCTrack, OracleTrack
+Moving camera?          → UCMCTrack, BoT-SORT, OracleTrack
 Re-identification?      → StrongSORT, BoostTrack
 State-of-the-art?       → BoostTrack
 ```

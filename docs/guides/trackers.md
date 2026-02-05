@@ -1,6 +1,6 @@
 # Trackers
 
-motcpp provides 9 state-of-the-art multi-object tracking algorithms. This guide helps you choose the right one for your application.
+motcpp provides 10 state-of-the-art multi-object tracking algorithms. This guide helps you choose the right one for your application.
 
 ## Overview
 
@@ -10,6 +10,7 @@ motcpp provides 9 state-of-the-art multi-object tracking algorithms. This guide 
 | [ByteTrack](#bytetrack) | Motion | ⚡⚡⚡⚡⚡ | ⭐⭐⭐⭐ | General purpose |
 | [OC-SORT](#oc-sort) | Motion | ⚡⚡⚡⚡ | ⭐⭐⭐⭐ | Occlusion handling |
 | [UCMCTrack](#ucmctrack) | Motion | ⚡⚡⚡⚡ | ⭐⭐⭐⭐ | Camera motion |
+| [OracleTrack](#oracletrack) | Motion | ⚡⚡⚡⚡ | ⭐⭐⭐⭐ | CMC + cascaded matching |
 | [DeepOC-SORT](#deepoc-sort) | ReID | ⚡⚡⚡ | ⭐⭐⭐⭐⭐ | Re-identification |
 | [StrongSORT](#strongsort) | ReID | ⚡⚡ | ⭐⭐⭐⭐⭐ | High accuracy |
 | [BoT-SORT](#bot-sort) | ReID | ⚡⚡ | ⭐⭐⭐⭐⭐ | Camera motion + ReID |
@@ -147,6 +148,40 @@ motcpp::trackers::UCMCTrack tracker(
 - When camera parameters are available
 
 **Paper:** [AAAI 2024](https://arxiv.org/abs/2312.08952)
+
+---
+
+### OracleTrack
+
+**Motion-Only Tracker with Camera Motion Compensation** — Well-engineered Kalman filter with CMC and cascaded matching.
+
+```cpp
+#include <motcpp/trackers/oracletrack.hpp>
+
+motcpp::trackers::OracleTrack tracker(
+    0.3f,   // det_thresh: detection confidence threshold
+    30,     // max_age: frames before track deletion
+    3,      // min_hits: hits before track confirmation
+    9.21f,  // gating_threshold: Mahalanobis gating
+    4.0f    // max_mahalanobis: maximum distance
+);
+```
+
+**Key Features:**
+- 7D state Kalman filtering with adaptive noise
+- ORB feature-based camera motion compensation (CMC)
+- ByteTrack-style cascaded matching (high/low confidence stages)
+- OC-SORT recovery with frozen covariance + velocity matching
+- Hierarchical track management (Tentative → Confirmed → Mature)
+- Confidence gradient filter for false positive suppression
+
+**Best for:**
+- General-purpose tracking with moving cameras
+- Heavy occlusions and re-identification challenges
+- High-speed requirements (449 FPS)
+- MOT17 benchmark evaluations
+
+**Performance:** HOTA 66.9, MOTA 77.3, IDF1 79.7 @ 449 FPS (MOT17-ablation)
 
 ---
 
@@ -311,10 +346,11 @@ motcpp::trackers::HybridSort tracker(
                      └───┬────┘                          └───┬────┘
                          │                                   │
                          ▼                                   ▼
-              ┌──────────────────┐              ┌──────────────────┐
-              │ OC-SORT/UCMCTrack│              │ StrongSORT/      │
-              │ (motion focus)   │              │ BoostTrack       │
-              └──────────────────┘              └──────────────────┘
+              ┌──────────────────────┐          ┌──────────────────┐
+              │ OC-SORT/UCMCTrack/   │          │ StrongSORT/      │
+              │ OracleTrack          │          │ BoostTrack       │
+              │ (motion focus)       │          │                  │
+              └──────────────────────┘          └──────────────────┘
 ```
 
 ## Benchmarks
@@ -327,6 +363,7 @@ Performance on MOT17 test set:
 | ByteTrack | 66.5 | 76.4 | 77.6 | 1100 |
 | OC-SORT | 64.6 | 73.9 | 74.4 | 850 |
 | UCMCTrack | 64.0 | 75.6 | 73.9 | 980 |
+| OracleTrack | 66.9 | 77.3 | 79.7 | **449** |
 | DeepOC-SORT | 65.8 | 75.1 | 76.2 | 120 |
 | StrongSORT | 66.2 | 75.8 | 77.1 | 95 |
 | BoT-SORT | 66.8 | 76.2 | 78.3 | 85 |

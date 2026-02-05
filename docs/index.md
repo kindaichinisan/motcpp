@@ -23,7 +23,7 @@ Welcome to the official documentation for **motcpp** - a high-performance, produ
 
 ## Features
 
-- **9 State-of-the-Art Trackers** — SORT, ByteTrack, OC-SORT, DeepOC-SORT, StrongSORT, BoT-SORT, BoostTrack, HybridSORT, UCMCTrack
+- **10 State-of-the-Art Trackers** — SORT, ByteTrack, OC-SORT, DeepOC-SORT, StrongSORT, BoT-SORT, BoostTrack, HybridSORT, UCMCTrack, OracleTrack
 - **High Performance** — Optimized C++17 implementation
 - **Modern API** — Clean, intuitive interface with Eigen and OpenCV
 - **Flexible ReID** — ONNX Runtime backend for appearance models
