@@ -45,3 +45,7 @@ It should returns:
 ## 4.1 The procedure entry point .... could not be located in the dynamic link library ...\motcpp_eval.exe.
 Reason: Version mismatch between built and runtime dll loaded. Use DependenciesGUI to check.  
 Solution: set PATH="D:\WJ_software\opencv\opencv-4.12.0\install\x64\mingw\bin;D:\WJ_software\mingw64\bin";%PATH% so that opencv and mingw dll used are the right now.  
+
+## 4.2 Git: fatal: unable to access "https://github.com/kindaichinisan/motcpp.git/": SSL certificate problem: unable to get local issuer certificate
+git config --global --replace-all http.sslCAPath "C:\certificates\"  
+git config --global --replace-all http.sslCAInfo "C:\certificates\certbundle.crt"  
