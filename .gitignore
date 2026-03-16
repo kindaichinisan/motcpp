@@ -58,3 +58,4 @@ demo_results/
 # Temporary files
 *.tmp
 *.log
+data/

@@ -57,6 +57,8 @@ std::unordered_map<int, std::vector<std::array<float, 5>>> readFromDetectionFile
 }
 
 int main(int argc, char* argv[]) {
+
+    cout<<"in main"<<endl;
     std::vector<cv::Scalar> colors = {
         cv::Scalar(255, 0, 0),      // Blue
         cv::Scalar(0, 255, 0),      // Green
@@ -630,8 +632,8 @@ int main(int argc, char* argv[]) {
     //     return 1;
     // }
     
-    std::string image_folder = "/home/hwenjun/OpenDataLab___MOT17/raw/MOT17/test/MOT17-01-DPM/img1/";
-    string detectionfilepath = "/home/hwenjun/OpenDataLab___MOT17/raw/MOT17/test/MOT17-01-DPM/det/det.txt";
+    std::string image_folder = "D:\\WJ_git\\motcpp\\data\\OpenDataLab___MOT17\\raw\\MOT17\\test\\MOT17-01-DPM\\img1\\";
+    string detectionfilepath = "D:\\WJ_git\\motcpp\\data\\OpenDataLab___MOT17\\raw\\MOT17\\test\\MOT17-01-DPM\\det\\det.txt";
     std::vector<std::string> image_paths;
 
     std::unordered_map<int, std::vector<std::array<float, 5>>> det_map = readFromDetectionFile(detectionfilepath);
