@@ -10,11 +10,11 @@
 #include <motcpp/trackers/oracletrack.hpp>
 
 #include <opencv2/opencv.hpp>
-// #include <iostream>
-// #include <filesystem>
-// #include <vector>
-// #include <string>
-#include <bits/stdc++.h>
+#include <iostream>
+#include <filesystem>
+#include <vector>
+#include <string>
+// #include <bits/stdc++.h>
 #include <chrono>
 
 namespace fs = std::filesystem;
