@@ -98,3 +98,10 @@ Modify launch.json.
 
 ## 9 Dont use #include <bits/stdc++.h>
 #include <bits/stdc++.h> is not standard C++, it is a convenience header provided by GCC/MinGW. It does not exist on every system. Using it will fail on VS2022 build.
+
+## 10 Able to build motcpp in VS2022
+add add_subdirectory(wj_scripts) to main CMakeLists.txt.
+Add CMakeLists.txt in wj_scripts folder.
+Use Cmake-gui to configure and generate.  
+Use VS2022 to build in Debug and Release.  
+Can step through in VS2022.
