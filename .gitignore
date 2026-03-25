@@ -60,3 +60,5 @@ demo_results/
 *.log
 data/
 wj_scripts/output.mp4
+install_VS2022/
+build_VS2022/

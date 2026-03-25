@@ -10,12 +10,16 @@
 #include <motcpp/trackers/oracletrack.hpp>
 
 #include <opencv2/opencv.hpp>
+#include <opencv2/tracking.hpp>
+#include <opencv2/tracking/tracking_legacy.hpp>
 #include <iostream>
 #include <filesystem>
 #include <vector>
 #include <string>
 // #include <bits/stdc++.h>
 #include <chrono>
+#include <fstream>
+#include <unordered_map>
 
 namespace fs = std::filesystem;
 using namespace std;
@@ -55,6 +59,16 @@ std::unordered_map<int, std::vector<std::array<float, 5>>> readFromDetectionFile
 
     return det_map;
 }
+
+// struct MOSSETrack {
+//     cv::Ptr<cv::legacy::TrackerMOSSE> tracker;
+//     cv::Rect2d bbox;
+// };
+
+struct KCFTrack {
+    cv::Ptr<cv::legacy::TrackerKCF> tracker;
+    cv::Rect2d bbox;
+};
 
 int main(int argc, char* argv[]) {
 
@@ -634,13 +648,16 @@ int main(int argc, char* argv[]) {
     
     std::string image_folder = "D:\\WJ_git\\motcpp\\data\\OpenDataLab___MOT17\\raw\\MOT17\\test\\MOT17-01-DPM\\img1\\";
     string detectionfilepath = "D:\\WJ_git\\motcpp\\data\\OpenDataLab___MOT17\\raw\\MOT17\\test\\MOT17-01-DPM\\det\\det.txt";
+    string img_ext=".tif";
+    int frameidx_startidx=5;
+    int frameidx_len=6;
     std::vector<std::string> image_paths;
 
     std::unordered_map<int, std::vector<std::array<float, 5>>> det_map = readFromDetectionFile(detectionfilepath);
 
     // Collect only .jpg images
     for (const auto& entry : fs::directory_iterator(image_folder)) {
-        if (entry.path().extension() == ".jpg") {
+        if (entry.path().extension() == img_ext) {
             image_paths.push_back(entry.path().string());
         }
     }
@@ -648,14 +665,17 @@ int main(int argc, char* argv[]) {
     // Zero-padded filenames → normal sort works
     std::sort(image_paths.begin(), image_paths.end());
 
-    VideoWriter writer("output.mp4",VideoWriter::fourcc('m','p','4','v'), 30, Size(1920,1080));
+    // VideoWriter writer("output.mp4",VideoWriter::fourcc('m','p','4','v'), 30, Size(1920,1080));
 
+    // Keyed by track ID (from tracker.update)
+    // std::unordered_map<int, MOSSETrack> mosse_trackers;
+    std::unordered_map<int, KCFTrack> mosse_trackers;
     for (const auto& path : image_paths) {
         cv::Mat frame = cv::imread(path);
         fs::path p(path);              // convert string → filesystem path
         std::string filename = p.filename().string();   // "000001.jpg"
         std::string stem     = p.stem().string();       // "000001"
-        int frame_idx = std::stoi(stem);   // 1
+        int frame_idx = std::stoi(stem.substr(frameidx_startidx, frameidx_len));   // 1
 
         auto& dets = det_map[frame_idx];
         Eigen::MatrixXf detections(dets.size(), 6);
@@ -669,8 +689,31 @@ int main(int argc, char* argv[]) {
             detections(i, 3) = dets[i][3];  // y2
             detections(i, 4) = dets[i][4];  // confidence
             detections(i, 5) = 0;           // class_id (pedestrian)
+        }
 
-            
+        if(dets.size()==0){ //if no detection, update tracks on tracklets and use tracked tracklets as detections 
+            int i=0;
+            detections.resize(mosse_trackers.size(), 6);
+
+            for(auto& [track_id, mt]: mosse_trackers){
+                bool ok=mt.tracker->update(frame, mt.bbox);
+                
+                if(ok){
+                    cv::Rect2d bbox = mt.bbox;
+
+                    detections(i, 0) = bbox.x;  // x1
+                    detections(i, 1) = bbox.y;  // y1
+                    detections(i, 2) = bbox.x + bbox.width;  // x2
+                    detections(i, 3) = bbox.y + bbox.height;  // y2
+                    detections(i, 4) = 0.9;  // confidence
+                    detections(i, 5) = 0;           // class_id (pedestrian)
+                    i++;
+                }
+            }
+            detections.conservativeResize(i, 6);
+        }
+        else{
+
         }
 
         auto start=std::chrono::high_resolution_clock::now();
@@ -678,6 +721,31 @@ int main(int argc, char* argv[]) {
         auto end=std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> elapsed=end-start;
         cout<<elapsed.count()<<"sec"<<endl;
+
+
+        for (int i = 0; i < tracks.rows(); ++i) {
+            int track_id = static_cast<int>(tracks(i, 4)); // track ID column
+            cv::Rect2d bbox(
+                tracks(i, 0),
+                tracks(i, 1),
+                tracks(i, 2) - tracks(i, 0),
+                tracks(i, 3) - tracks(i, 1)
+            );
+
+            // Initialize MOSSE tracker if new
+            if (mosse_trackers.find(track_id) == mosse_trackers.end()) {
+                // MOSSETrack mt;
+                KCFTrack mt;
+                // mt.tracker = cv::legacy::TrackerMOSSE::create();
+                mt.tracker = cv::legacy::TrackerKCF::create();
+                mt.tracker->init(frame, bbox);
+                mt.bbox = bbox;
+                mosse_trackers[track_id] = mt;
+            } else {
+                // mosse_trackers[track_id].tracker->update(frame, mosse_trackers[track_id].bbox);
+                // bbox = mosse_trackers[track_id].bbox;  // use MOSSE-predicted box
+            }
+        }
 
         cout<<"tracks: "<<tracks.rows()<<endl;
         for (int i = 0; i < tracks.rows(); ++i) {
@@ -716,10 +784,10 @@ int main(int argc, char* argv[]) {
         cv::imshow("1", frame);
         waitKey(1);
 
-        writer.write(frame);
+        // writer.write(frame);
     }
 
-    writer.release();
+    // writer.release();
 
     
     return 0;

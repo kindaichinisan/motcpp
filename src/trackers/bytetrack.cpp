@@ -440,6 +440,14 @@ Eigen::MatrixXf ByteTrack::update(const Eigen::MatrixXf& dets,
             }
         }
     }
+    else{
+        for(auto* track: r_tracked_stracks_ptrs){
+            if(track->state()!=ByteTrackState::Lost){
+                track->mark_lost();
+                lost_stracks_new.push_back(*track);
+            }
+        }
+    }
     
     // Deal with unconfirmed tracks
     // Use the indices we already computed above
