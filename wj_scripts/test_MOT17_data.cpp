@@ -648,6 +648,7 @@ int main(int argc, char* argv[]) {
     
     std::string image_folder = "D:\\WJ_git\\motcpp\\data\\OpenDataLab___MOT17\\raw\\MOT17\\test\\MOT17-01-DPM\\img1\\";
     string detectionfilepath = "D:\\WJ_git\\motcpp\\data\\OpenDataLab___MOT17\\raw\\MOT17\\test\\MOT17-01-DPM\\det\\det.txt";
+    string outputfolder="D:\\WJ_git\\motcpp\\output\\";
     string img_ext=".tif";
     int frameidx_startidx=5;
     int frameidx_len=6;
@@ -783,6 +784,10 @@ int main(int argc, char* argv[]) {
         cout<<path<<endl;
         cv::imshow("1", frame);
         waitKey(1);
+
+        string outputfilepath = outputfolder + filename;
+        cv::imwrite(outputfilepath.c_str(), frame);
+        
 
         // writer.write(frame);
     }
