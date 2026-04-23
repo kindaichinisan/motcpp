@@ -12,52 +12,59 @@ namespace motcpp::trackers {
 // Static shared Kalman filter
 motion::KalmanFilterXYAH STrack::shared_kalman_;
 
+//STrack is single object track (hold state (pos, v via KF))
+//create track (not real yet). Is just a track candidate. Real with trackid when track.activate(). Confitmed track when is_activate=true.
 STrack::STrack(const Eigen::VectorXf& det, int max_obs)
-    : max_obs_(max_obs)
+    : max_obs_(max_obs) //# past observations to keep
     , kalman_filter_(nullptr)
-    , id_(0)
+    , id_(0) //trackid assigned later
     , state_(ByteTrackState::New)
-    , is_activated_(false)
-    , tracklet_len_(0)
-    , frame_id_(0)
-    , start_frame_(0)
+    , is_activated_(false) //not confirmed yet
+    , tracklet_len_(0) //length of track
+    , frame_id_(0) //last updated frame
+    , start_frame_(0) //when track starts
 {
     // det format: [x1, y1, x2, y2, conf, cls, det_ind]
-    Eigen::Vector4f xyxy = det.head<4>();
-    xywh_ = utils::xyxy2xywh(xyxy);
-    tlwh_ = utils::xywh2tlwh(xywh_);
-    xyah_ = utils::tlwh2xyah(tlwh_);
+    Eigen::Vector4f xyxy = det.head<4>(); //topleft (x,y), botright (x,y) for IoU matching
+    xywh_ = utils::xyxy2xywh(xyxy); //(cx,cy,w,h) yolo format
+    tlwh_ = utils::xywh2tlwh(xywh_); //(tlx,tly,w,h) for visualization
+    xyah_ = utils::tlwh2xyah(tlwh_); //(cx,cy,aspect_ratio,h) for KF
     conf_ = det(4);
-    cls_ = static_cast<int>(det(5));
-    det_ind_ = (det.size() > 6) ? static_cast<int>(det(6)) : 0;
+    cls_ = static_cast<int>(det(5)); //object class
+    det_ind_ = (det.size() > 6) ? static_cast<int>(det(6)) : 0; //for debugging
 }
 
+//initialize a new track for new detection
+//state=Track => valid Kalman state
+//is_activated=true => track is confirmed and safe to output
+//multiple detection to create true trackid
 void STrack::activate(motion::KalmanFilterXYAH& kalman_filter, int frame_id) {
-    kalman_filter_ = &kalman_filter;
+    kalman_filter_ = &kalman_filter; //dont copy filter, just keep a pointer to avoid expensive copy
     id_ = next_id();
-    auto [mean_init, cov_init] = kalman_filter.initiate(xyah_);
+    auto [mean_init, cov_init] = kalman_filter.initiate(xyah_); //create KF state -> KF expands it to 8D state [cx,cy,a,h,+v equivalent]
     mean = mean_init;
     covariance = cov_init;
     
     tracklet_len_ = 0;
     state_ = ByteTrackState::Tracked;
-    if (frame_id == 1) {
+    if (frame_id == 1) { //frame 1 is trusted immediately, whereas later frames need confirmation.
         is_activated_ = true;
     }
     frame_id_ = frame_id;
     start_frame_ = frame_id;
 }
 
+//lost track reappears. Detection, Detection, NoDet (lost track), Detection (lost track reappears). used for lost track which is now matched
 void STrack::re_activate(const STrack& new_track, int frame_id, bool new_id) {
-    auto [mean_new, cov_new] = kalman_filter_->update(mean, covariance, new_track.xyah_);
+    auto [mean_new, cov_new] = kalman_filter_->update(mean, covariance, new_track.xyah_); //KF.update does 2 th: correct drift and reduce uncertainty (cov)
     mean = mean_new;
     covariance = cov_new;
     
-    tracklet_len_ = 0;
-    state_ = ByteTrackState::Tracked;
+    tracklet_len_ = 0; //new segment of the track
+    state_ = ByteTrackState::Tracked; //b4 this is ByteTrackState::Lost
     is_activated_ = true;
     frame_id_ = frame_id;
-    if (new_id) {
+    if (new_id) { //likely false for most call. accept new_id to make this function flexible in case track has been lost for very long. To create new id instead of using old trkid.
         id_ = next_id();
     }
     conf_ = new_track.conf_;
@@ -65,15 +72,16 @@ void STrack::re_activate(const STrack& new_track, int frame_id, bool new_id) {
     det_ind_ = new_track.det_ind_;
 }
 
+//used for matched track
 void STrack::update(const STrack& new_track, int frame_id) {
     frame_id_ = frame_id;
-    tracklet_len_ += 1;
-    history_observations_.push_back(xyxy());
-    if (static_cast<int>(history_observations_.size()) > max_obs_) {
+    tracklet_len_ += 1; //longer tracks more reliable.
+    history_observations_.push_back(xyxy()); //save current BB (true trajectory instead of smoothed-only positon) b4 update
+    if (static_cast<int>(history_observations_.size()) > max_obs_) { //keep only recent observations
         history_observations_.pop_front();
     }
     
-    auto [mean_new, cov_new] = kalman_filter_->update(mean, covariance, new_track.xyah_);
+    auto [mean_new, cov_new] = kalman_filter_->update(mean, covariance, new_track.xyah_); //mean, covariance=prediction. new_track.xyah_=ob is actually here.
     mean = mean_new;
     covariance = cov_new;
     
@@ -84,16 +92,22 @@ void STrack::update(const STrack& new_track, int frame_id) {
     det_ind_ = new_track.det_ind_;
 }
 
+//no detection step of tracking. move the track forward in time using motion model only. I didnt see the object this frame. Where should it be now.
+//w/o this, matching is only based on last position.
+//with this, matching is based on expected motion.
 void STrack::predict() {
     Eigen::VectorXf mean_state = mean;
-    if (state_ != ByteTrackState::Tracked) {
-        mean_state(7) = 0; // Zero velocity
+    if (state_ != ByteTrackState::Tracked) { //special for lost track
+        mean_state(7) = 0; // Zero velocity //velocity of height (scale)=0. scale change are unstable when obj is not observed, so dont let size drift wildly when not tracked. Scale dont change when trk is lost.
     }
-    auto [mean_new, cov_new] = kalman_filter_->predict(mean_state, covariance);
+    auto [mean_new, cov_new] = kalman_filter_->predict(mean_state, covariance); //x'=Fx. P'=FPF_T+Q, x=state, P=covariance, F=motion model, Q=process noise. position += velocity. uncertainty increases (due to no measurement)
     mean = mean_new;
     covariance = cov_new;
 }
 
+//batched version of predict for many tracks to reduce runtime.
+//predict/multi_predict is called b4 doing association
+//better cache locality than calling predict in a for loop.
 void STrack::multi_predict(std::vector<STrack>& stracks) {
     if (stracks.empty()) return;
     
@@ -127,6 +141,7 @@ Eigen::Vector4f STrack::xyxy() const {
     return ret;
 }
 
+//STrack is one object being tracked. ByteTrack is the whole tracking system managing all objects
 ByteTrack::ByteTrack(float det_thresh, int max_age, int max_obs, int min_hits,
                     float iou_threshold, bool per_class, int nr_classes,
                     const std::string& asso_func, bool is_obb,
@@ -134,17 +149,20 @@ ByteTrack::ByteTrack(float det_thresh, int max_age, int max_obs, int min_hits,
                     int track_buffer, int frame_rate)
     : BaseTracker(det_thresh, max_age, max_obs, min_hits, iou_threshold,
                  per_class, nr_classes, asso_func, is_obb)
-    , min_conf_(min_conf)
-    , track_thresh_(track_thresh)
-    , match_thresh_(match_thresh)
-    , track_buffer_(track_buffer)
-    , buffer_size_(static_cast<int>(frame_rate / 30.0f * track_buffer))
-    , max_time_lost_(buffer_size_)
+    , min_conf_(min_conf) //lowest detection confi to consider
+    , track_thresh_(track_thresh) //main threshold for high confidence detection
+    , match_thresh_(match_thresh) //IoU threshold for matching
+    , track_buffer_(track_buffer) //how long to keep lost tracks alive
+    , buffer_size_(static_cast<int>(frame_rate / 30.0f * track_buffer)) //ByteTrack originally designed for 30fps.
+    , max_time_lost_(buffer_size_) //control when a track is deleted. If not seen for n frames, remove track
     , frame_id_(0)
 {
-    det_thresh_ = track_thresh_;
+    det_thresh_ = track_thresh_; //detection threshold (detection model output) and tracking threshold (association logic) are separate but are unified here for simplicity.
     
     // Pre-allocate buffers for zero-allocation hot path
+    //without this, every frame will get new eigen matrix allocations. with this, reuse same memory every frame.
+    //reserve allocate capacity once, avoid reallocation
+    //200 is assuming max 200 tracks and 200 detections. If exceed, code will call conservativeResize, which takes longer.
     cost_matrix_buffer_.resize(200, 200);
     track_xyxy_buffer_.resize(200, 4);
     det_xyxy_buffer_.resize(200, 4);
@@ -156,18 +174,20 @@ ByteTrack::ByteTrack(float det_thresh, int max_age, int max_obs, int min_hits,
 
 void ByteTrack::reset() {
     BaseTracker::reset();
-    frame_id_ = 0;
-    active_tracks_.clear();
-    lost_stracks_.clear();
-    removed_stracks_.clear();
-    STrack::clear_count();
+    frame_id_ = 0; //frame idx is used for track age, lost track timeout, activation logic
+    active_tracks_.clear(); //resets all confirmed tracks and all live trajectories.
+    lost_stracks_.clear(); //tracks that were lost or not seen recently also removed.
+    removed_stracks_.clear(); //tracks that were permanently delted or expired by timeout also removed.
+    STrack::clear_count(); //tracks ID start from 0
 }
 
+//ByteTrack is the manager of the STrack (one tracked object (state+motion model))
+//det: [x1,y1,x2,y2,conf,classid]
 Eigen::MatrixXf ByteTrack::update(const Eigen::MatrixXf& dets,
                                   const cv::Mat& img,
                                   const Eigen::MatrixXf& embs) {
-    check_inputs(dets, img, embs);
-    setup_detection_format(dets);
+    check_inputs(dets, img, embs); //check input is the right size
+    setup_detection_format(dets); //
     setup_association_function(img);
     
     // Add detection indices
@@ -187,19 +207,19 @@ Eigen::MatrixXf ByteTrack::update(const Eigen::MatrixXf& dets,
     
     // Filter by confidence
     Eigen::VectorXf confs = dets_with_ind.col(4);
-    Eigen::VectorXi remain_inds = (confs.array() > track_thresh_).cast<int>();
-    Eigen::VectorXi inds_low = (confs.array() > min_conf_).cast<int>();
-    Eigen::VectorXi inds_high = (confs.array() < track_thresh_).cast<int>();
-    Eigen::VectorXi inds_second = (inds_low.array() * inds_high.array()).cast<int>();
-    
+    Eigen::VectorXi remain_inds = (confs.array() > track_thresh_).cast<int>(); //idx with conf>high_confid. primary detection used for main/first association (strong matching). used for normal tracking
+    Eigen::VectorXi inds_low = (confs.array() > min_conf_).cast<int>(); //idx with conf>min thresh to consider. include both medium and high conf
+    Eigen::VectorXi inds_high = (confs.array() < track_thresh_).cast<int>(); //idx with conf<high_confid. below high confid
+    Eigen::VectorXi inds_second = (inds_low.array() * inds_high.array()).cast<int>(); //idx with conf between (min thresh, high_confid). 2nd association step for recovering missed tracks. used only for recovery. Does not throw away weak detection immediately.
+    //not saved in variable is the third region with low confid. To ignore
     std::vector<int> remain_indices, second_indices;
     for (int i = 0; i < dets_with_ind.rows(); ++i) {
-        if (remain_inds(i)) remain_indices.push_back(i);
-        if (inds_second(i)) second_indices.push_back(i);
+        if (remain_inds(i)) remain_indices.push_back(i); //used for first assoc
+        if (inds_second(i)) second_indices.push_back(i); //used for 2nd assoc
     }
     
-    Eigen::MatrixXf dets_high(dets_with_ind.rows(), dets_with_ind.cols());
-    Eigen::MatrixXf dets_second(second_indices.size(), dets_with_ind.cols());
+    Eigen::MatrixXf dets_high(dets_with_ind.rows(), dets_with_ind.cols()); //to be resized later. used to store high confid detections
+    Eigen::MatrixXf dets_second(second_indices.size(), dets_with_ind.cols()); //used for 2nd assoc
     
     int high_count = 0;
     for (int idx : remain_indices) {
@@ -213,16 +233,18 @@ Eigen::MatrixXf ByteTrack::update(const Eigen::MatrixXf& dets,
     }
     
     // Create STrack objects
+    //create high confid detection as tracks
+    //convert detection into STrack so that both tracks and detection become STrack, making matching simpler.
     std::vector<STrack> detections;
     for (int i = 0; i < high_count; ++i) {
-        detections.emplace_back(dets_high.row(i).transpose(), max_obs_);
+        detections.emplace_back(dets_high.row(i).transpose(), max_obs_); //used emplace_back to construct STrack directly in-place. to avoid temp obj copy. slightly more efficient than push_back
     }
     
     // Separate confirmed and unconfirmed tracks
     // OPTIMIZED: Use pre-allocated buffers and reserve capacity
-    std::vector<int> unconfirmed_indices_in_active;
-    std::vector<int> tracked_indices_in_active;
-    unconfirmed_indices_in_active.reserve(active_tracks_.size());
+    std::vector<int> unconfirmed_indices_in_active; //newly created/ weak track. is_activate=false. used for special association/matching
+    std::vector<int> tracked_indices_in_active; //confirmed/ stable track. is_activate=true. used for main association/matching
+    unconfirmed_indices_in_active.reserve(active_tracks_.size()); //reserve to avoid reallocation during push_back
     tracked_indices_in_active.reserve(active_tracks_.size());
     
     for (size_t i = 0; i < active_tracks_.size(); ++i) {
@@ -234,6 +256,7 @@ Eigen::MatrixXf ByteTrack::update(const Eigen::MatrixXf& dets,
     }
     
     // Create copies for association (Python uses list references, but we need copies for multi_predict)
+    //convert indices into object (copies, not references necause ByteTrack needs clean separation for association)
     std::vector<STrack> unconfirmed;
     std::vector<STrack> tracked_stracks;
     unconfirmed.reserve(unconfirmed_indices_in_active.size());
@@ -248,11 +271,15 @@ Eigen::MatrixXf ByteTrack::update(const Eigen::MatrixXf& dets,
     
     // Step 2: First association with high confidence detections
     // CRITICAL: strack_pool contains copies, so we need to track indices to update originals
+    //lost_stracks are previously reliable but lost because missed detection, hence worth recovering.
+    //unconfirmed tracks are not reliable yet (created recently from 1 detection only, may be FP), not fully activated yet, hence not trusted.
+    //consider tracked_stracks and lost_stracks for first association with high conf detection
     std::vector<STrack> strack_pool = joint_stracks(tracked_stracks, lost_stracks_);
     
     // Map strack_pool indices to original track indices
     // First part is tracked_stracks (maps to active_tracks_), second part is lost_stracks_
-    std::vector<std::pair<int, bool>> track_index_map; // (index_in_original, is_tracked)
+    //prediction happens on copies to be used in matching. so that we can later update the originals based on where it comes from.
+    std::vector<std::pair<int, bool>> track_index_map; // (index_in_original, is_tracked) //this variable is for writing the result back after matching.
     track_index_map.reserve(strack_pool.size());
     for (size_t i = 0; i < tracked_stracks.size(); ++i) {
         track_index_map.emplace_back(tracked_indices_in_active[i], true);
@@ -262,25 +289,28 @@ Eigen::MatrixXf ByteTrack::update(const Eigen::MatrixXf& dets,
     }
     
     // Predict all tracks using multi_predict (batch prediction)
-    STrack::multi_predict(strack_pool);
+    STrack::multi_predict(strack_pool); //do KF prediction only.
     
     // OPTIMIZED: Use pre-allocated buffers, resize only if needed
+    //*2 => amortized growth strategy. if resize exactly to n_tracks, next frame might exceed again, repeated reallocations.
     size_t n_tracks = strack_pool.size();
     size_t n_dets = detections.size();
     
     if (track_xyxy_buffer_.rows() < static_cast<int>(n_tracks)) {
-        track_xyxy_buffer_.conservativeResize(n_tracks * 2, 4);
+        track_xyxy_buffer_.conservativeResize(n_tracks * 2, 4); //keep existing data compare to resize which discard data.
     }
     if (det_xyxy_buffer_.rows() < static_cast<int>(n_dets)) {
         det_xyxy_buffer_.conservativeResize(n_dets * 2, 4);
     }
     
+    //convert all tracks and detections into a dense matrix for fast vectorized IoU computation.
+    //accidentally copy instead of viewing. May be able to optimize by auto track_xyxy = track_xyxy_buffer_.topRows(n_tracks); or Eigen::Block<Eigen::MatrixXf> track_xyxy = track_xyxy_buffer_.topRows(n_tracks);. Avoid allocation and keep it a view.
     Eigen::MatrixXf track_xyxy = track_xyxy_buffer_.topRows(n_tracks);
     Eigen::MatrixXf det_xyxy = det_xyxy_buffer_.topRows(n_dets);
     
     // OPTIMIZED: Direct row assignment without transpose where possible
     for (size_t i = 0; i < n_tracks; ++i) {
-        Eigen::Vector4f xyxy = strack_pool[i].xyxy();
+        Eigen::Vector4f xyxy = strack_pool[i].xyxy(); //may be able to optimize
         track_xyxy(i, 0) = xyxy(0);
         track_xyxy(i, 1) = xyxy(1);
         track_xyxy(i, 2) = xyxy(2);

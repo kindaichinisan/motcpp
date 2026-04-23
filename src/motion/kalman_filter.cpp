@@ -28,15 +28,15 @@ BaseKalmanFilter::BaseKalmanFilter(int ndim)
 
 std::pair<Eigen::VectorXf, Eigen::MatrixXf> BaseKalmanFilter::initiate(
     const Eigen::VectorXf& measurement) {
-    Eigen::VectorXf mean_pos = measurement;
+    Eigen::VectorXf mean_pos = measurement; //(cx,cy,a,h)
     Eigen::VectorXf mean_vel = Eigen::VectorXf::Zero(ndim_);
     
     Eigen::VectorXf mean(2 * ndim_);
-    mean.head(ndim_) = mean_pos;
-    mean.tail(ndim_) = mean_vel;
+    mean.head(ndim_) = mean_pos; //[x,x,x,x,_,_,_,_]
+    mean.tail(ndim_) = mean_vel; //[_,_,_,_,x,x,x,x]
     
-    Eigen::VectorXf std = get_initial_covariance_std(measurement);
-    Eigen::MatrixXf covariance = std.array().square().matrix().asDiagonal();
+    Eigen::VectorXf std = get_initial_covariance_std(measurement); //stdev for all the 8 variables
+    Eigen::MatrixXf covariance = std.array().square().matrix().asDiagonal(); //8x8 matrix with 0 at non-diagonal
     
     return {mean, covariance};
 }
