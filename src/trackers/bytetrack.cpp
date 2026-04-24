@@ -324,19 +324,21 @@ Eigen::MatrixXf ByteTrack::update(const Eigen::MatrixXf& dets,
         det_xyxy(i, 3) = xyxy(3);
     }
     
-    Eigen::MatrixXf dists = utils::iou_distance(track_xyxy, det_xyxy);
+    Eigen::MatrixXf dists = utils::iou_distance(track_xyxy, det_xyxy); //WJ:pairwise distance matrix (NxM) between track_xyxy (Nx4) and det_xyxy (Mx4). distance=1-IoU
     
     // Fuse with score
+    //WJ:amortized growth (does not seem useful at all)
     if (det_confs_buffer_.size() < static_cast<int>(n_dets)) {
         det_confs_buffer_.conservativeResize(n_dets * 2);
     }
-    Eigen::VectorXf det_confs = det_confs_buffer_.head(n_dets);
+    Eigen::VectorXf det_confs = det_confs_buffer_.head(n_dets); //WJ:view into the buffer. no memory allocation
     for (size_t i = 0; i < n_dets; ++i) {
         det_confs(i) = detections[i].conf();
     }
-    dists = utils::fuse_score(dists, det_confs);
+    dists = utils::fuse_score(dists, det_confs); //WJ:high conf detection has smaller IoU distance
     
-    auto assignment = utils::linear_assignment(dists, match_thresh_);
+    auto assignment = utils::linear_assignment(dists, match_thresh_); //WJ:hungarian algo to do bipartite matching problem
+    //WJ:has match and unmmatch
     
     // OPTIMIZED: Pre-allocate and use faster matching
     std::vector<int> u_track, u_detection;
@@ -354,53 +356,56 @@ Eigen::MatrixXf ByteTrack::update(const Eigen::MatrixXf& dets,
     
     for (size_t i = 0; i < n_tracks; ++i) {
         if (matched_tracks.find(static_cast<int>(i)) == matched_tracks.end()) {
-            u_track.push_back(i);
+            u_track.push_back(i); //WJ:unmatched tracked (missed detection tracks)
         }
     }
     for (size_t i = 0; i < n_dets; ++i) {
         if (matched_dets.find(static_cast<int>(i)) == matched_dets.end()) {
-            u_detection.push_back(i);
+            u_detection.push_back(i); //WJ:unmmatched detection (new track candidate)
         }
     }
     
     // Process matches - update original tracks, not copies
     for (const auto& match : assignment.matches) {
-        int itracked = match[0];
+        int itracked = match[0]; //WJ:strack_pool idx
         int idet = match[1];
         
         // Get reference to original track
-        auto [orig_idx, is_tracked] = track_index_map[itracked];
+        auto [orig_idx, is_tracked] = track_index_map[itracked]; //WJ:strack_pool idx to real track storage idx
         STrack* orig_track;
         if (is_tracked) {
             // Update original in active_tracks_
-            orig_track = &active_tracks_[orig_idx];
+            orig_track = &active_tracks_[orig_idx]; //WJ:active set
         } else {
             // Update original in lost_stracks_
-            orig_track = &lost_stracks_[orig_idx];
+            orig_track = &lost_stracks_[orig_idx]; //WJ:recovery set
         }
         
         // Update prediction state from strack_pool copy
+        //WJ:copy updated motion estimate back into real track
         orig_track->mean = strack_pool[itracked].mean;
         orig_track->covariance = strack_pool[itracked].covariance;
         
         STrack& det = detections[idet];
         
-        if (orig_track->state() == ByteTrackState::Tracked) {
+        if (orig_track->state() == ByteTrackState::Tracked) { //WJ:already active track, do normal tracking update (KF correction step)
             orig_track->update(det, frame_id_);
             activated_stracks.push_back(*orig_track);
-        } else {
+        } else { //WJ:previously lost track, identity recovered after disappearance.
             orig_track->re_activate(det, frame_id_, false);
             refind_stracks.push_back(*orig_track);
         }
     }
     
     // Step 3: Second association with low confidence detections
+    //WJ:detection candidates with [low,high] conf
     std::vector<STrack> detections_second;
     for (int i = 0; i < second_count; ++i) {
         detections_second.emplace_back(dets_second.row(i).transpose(), max_obs_);
     }
     
     // Build r_tracked_stracks with references to original tracks
+    //WJ:use only tracks in active_tracks and not those in lost_stracks_. Unmatched in the primary matching.
     std::vector<STrack*> r_tracked_stracks_ptrs;
     std::vector<int> r_tracked_indices; // indices in strack_pool
     for (int idx : u_track) {
@@ -409,13 +414,13 @@ Eigen::MatrixXf ByteTrack::update(const Eigen::MatrixXf& dets,
             if (is_tracked) {
                 // Reference original in active_tracks_
                 r_tracked_stracks_ptrs.push_back(&active_tracks_[orig_idx]);
-                r_tracked_indices.push_back(idx);
+                r_tracked_indices.push_back(idx); //WJ:u_track idx
             }
         }
     }
     
     if (!detections_second.empty() && !r_tracked_stracks_ptrs.empty()) {
-        Eigen::MatrixXf r_track_xyxy(r_tracked_stracks_ptrs.size(), 4);
+        Eigen::MatrixXf r_track_xyxy(r_tracked_stracks_ptrs.size(), 4); //WJ:remaining tracks (unmmatched in primary matching excluding lost track)
         Eigen::MatrixXf det2_xyxy(detections_second.size(), 4);
         for (size_t i = 0; i < r_tracked_stracks_ptrs.size(); ++i) {
             r_track_xyxy.row(i) = r_tracked_stracks_ptrs[i]->xyxy().transpose();
@@ -425,8 +430,10 @@ Eigen::MatrixXf ByteTrack::update(const Eigen::MatrixXf& dets,
         }
         
         Eigen::MatrixXf dists2 = utils::iou_distance(r_track_xyxy, det2_xyxy);
-        auto assignment2 = utils::linear_assignment(dists2, 0.5f);
+        auto assignment2 = utils::linear_assignment(dists2, 0.5f); //WJ:use 0.5 instead of match_thresh_
         
+        //WJ:can be optimized. Currently O(NxM)
+        //WJ:find unmmatched tracks and detections for 2nd matching
         std::vector<int> u_track2, u_detection2;
         for (size_t i = 0; i < r_tracked_stracks_ptrs.size(); ++i) {
             bool matched = false;
@@ -449,19 +456,22 @@ Eigen::MatrixXf ByteTrack::update(const Eigen::MatrixXf& dets,
             STrack* track = r_tracked_stracks_ptrs[itracked];
             
             // Update prediction state from strack_pool
+            //WJ:update original motion estimate
             int strack_idx = r_tracked_indices[itracked];
             track->mean = strack_pool[strack_idx].mean;
             track->covariance = strack_pool[strack_idx].covariance;
             
-            if (track->state() == ByteTrackState::Tracked) {
+            if (track->state() == ByteTrackState::Tracked) { //WJ:already active track, do normal tracking update (KF correction step)
                 track->update(detections_second[idet], frame_id_);
                 activated_stracks.push_back(*track);
-            } else {
+            } else { //WJ:previously lost track, identity recovered after disappearance.
                 track->re_activate(detections_second[idet], frame_id_, false);
                 refind_stracks.push_back(*track);
             }
+
         }
         
+        //WJ:unmatched tracks -> lost
         for (int idx : u_track2) {
             STrack* track = r_tracked_stracks_ptrs[idx];
             if (track->state() != ByteTrackState::Lost) {
@@ -483,13 +493,15 @@ Eigen::MatrixXf ByteTrack::update(const Eigen::MatrixXf& dets,
     // Use the indices we already computed above
     // unconfirmed_indices_in_active already contains the indices
     
-    std::vector<STrack> remaining_detections;
+    std::vector<STrack> remaining_detections; //WJ:remaining detection not matched in 1st and 2nd matching.
     for (int idx : u_detection) {
         remaining_detections.push_back(detections[idx]);
     }
     
     std::vector<int> u_detection_final;
     
+    //WJ:3rd matching stage
+    //WJ:unconfirmed tracks are tracks that is weak/tentative (detected once)
     if (!unconfirmed.empty() && !remaining_detections.empty()) {
         // OPTIMIZED: Use pre-allocated buffers
         size_t n_unconf = unconfirmed.size();
@@ -543,7 +555,7 @@ Eigen::MatrixXf ByteTrack::update(const Eigen::MatrixXf& dets,
             matched_det_remaining_indices.insert(match[1]);
         }
         
-        std::vector<int> u_unconfirmed;
+        std::vector<int> u_unconfirmed; //WJ:unmatched unconfirmed
         u_unconfirmed.reserve(n_unconf);
         for (size_t i = 0; i < n_unconf; ++i) {
             if (matched_unconf.find(static_cast<int>(i)) == matched_unconf.end()) {
@@ -553,14 +565,24 @@ Eigen::MatrixXf ByteTrack::update(const Eigen::MatrixXf& dets,
         
         // Build u_detection_final: detections from u_detection that weren't matched
         u_detection_final.reserve(u_detection.size());
-        for (size_t i = 0; i < u_detection.size(); ++i) {
-            if (matched_det_remaining_indices.find(static_cast<int>(i)) == matched_det_remaining_indices.end()) {
+        //WJ:potential bug discovered by chatgpt. matched_det_remaining_indices is in remaining_detctions space but u are applying it to u_detection space.
+        // for (size_t i = 0; i < u_detection.size(); ++i) {
+        //     if (matched_det_remaining_indices.find(static_cast<int>(i)) == matched_det_remaining_indices.end()) {
+        //         u_detection_final.push_back(u_detection[i]);
+        //     }
+        // }
+        for (size_t i = 0; i < n_rem_det; ++i) {
+            bool matched = false;
+            for (const auto& match : assignment3.matches) {
+                if (match[1] == static_cast<int>(i)) matched = true;
+            }
+            if (!matched){
                 u_detection_final.push_back(u_detection[i]);
             }
         }
         
         // Update original unconfirmed tracks
-        for (const auto& match : assignment3.matches) {
+        for (const auto& match : assignment3.matches) { //WJ:uncertain track is confirmed by a low confid detection
             int itracked = match[0];
             int idet = match[1];
             int orig_idx = unconfirmed_indices_in_active[itracked];
@@ -569,6 +591,8 @@ Eigen::MatrixXf ByteTrack::update(const Eigen::MatrixXf& dets,
         }
         
         // Mark unmatched unconfirmed tracks as removed
+        //WJ:unmatched unconfirmed track is removed.
+        //WJ:track->lost->unconfirmed->removed
         for (int idx : u_unconfirmed) {
             int orig_idx = unconfirmed_indices_in_active[idx];
             active_tracks_[orig_idx].mark_removed();
@@ -581,10 +605,11 @@ Eigen::MatrixXf ByteTrack::update(const Eigen::MatrixXf& dets,
     
     // Step 4: Init new tracks
     
+    //WJ:unmmatched detection in 1st,2nd,3rd matching are potentially new objects
     for (int idx : u_detection_final) {
         if (idx < static_cast<int>(detections.size())) {
             STrack& track = detections[idx];
-            if (track.conf() >= det_thresh_) {
+            if (track.conf() >= det_thresh_) { //WJ:only strong detection can become tracks
                 track.activate(kalman_filter_, frame_id_);
                 activated_stracks.push_back(track);
             }
@@ -592,6 +617,8 @@ Eigen::MatrixXf ByteTrack::update(const Eigen::MatrixXf& dets,
     }
     
     // Step 5: Update state
+    //WJ:if a track has been invisible for too long, permanently delete it.
+    //WJ:do not erase here, only mark. actual deletion handled later.
     for (auto& track : lost_stracks_) {
         if (frame_count_ - track.end_frame() > max_time_lost_) {
             track.mark_removed();
@@ -600,25 +627,29 @@ Eigen::MatrixXf ByteTrack::update(const Eigen::MatrixXf& dets,
     }
     
     // Update active tracks - keep only tracked ones
+    //WJ:keep only Tracked, dont include lost, removed, unconfirmed tracks.
     std::vector<STrack> new_active_tracks;
     for (auto& track : active_tracks_) {
         if (track.state() == ByteTrackState::Tracked) {
             new_active_tracks.push_back(track);
         }
     }
+    //WJ:persistent tracked + newly confirmed tracks + refound tracks
     active_tracks_ = new_active_tracks;
     active_tracks_ = joint_stracks(active_tracks_, activated_stracks);
     active_tracks_ = joint_stracks(active_tracks_, refind_stracks);
     
     // Update lost tracks
+    //WJ:lost_stracks - active_tracks (recovered tracks) + newly lost track - newly removed tracks
     lost_stracks_ = sub_stracks(lost_stracks_, active_tracks_);
     lost_stracks_.insert(lost_stracks_.end(), lost_stracks_new.begin(), lost_stracks_new.end());
     lost_stracks_ = sub_stracks(lost_stracks_, removed_stracks_new);
     
+    //WJ:archive it in permanently removed tracks
     removed_stracks_.insert(removed_stracks_.end(), removed_stracks_new.begin(), removed_stracks_new.end());
     
     // Remove duplicates
-    auto [new_active, new_lost] = remove_duplicate_stracks(active_tracks_, lost_stracks_);
+    auto [new_active, new_lost] = remove_duplicate_stracks(active_tracks_, lost_stracks_); //WJ:check active_tracks_ and lost_stracks_ overlap in IoU for duplicate check
     active_tracks_ = new_active;
     lost_stracks_ = new_lost;
     
@@ -719,6 +750,7 @@ std::pair<std::vector<STrack>, std::vector<STrack>> ByteTrack::remove_duplicate_
             if (pdist(i, j) < 0.15f) {
                 int timep = stracksa[i].frame_id() - stracksa[i].start_frame();
                 int timeq = stracksb[j].frame_id() - stracksb[j].start_frame();
+                //decide which tracks survives (longer-lived track wins)
                 if (timep > timeq) {
                     dupb.push_back(j);
                 } else {

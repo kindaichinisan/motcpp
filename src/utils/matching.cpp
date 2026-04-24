@@ -127,6 +127,9 @@ Eigen::MatrixXf fuse_iou(const Eigen::MatrixXf& reid_cost_matrix,
     return fuse_cost;
 }
 
+//WJ:convert distance to IoU.
+//WJ:new_IoU=IoU*conf
+//WJ:newIoU->new distance
 Eigen::MatrixXf fuse_score(const Eigen::MatrixXf& iou_cost_matrix,
                            const Eigen::VectorXf& det_confs) {
     if (iou_cost_matrix.size() == 0) {
